@@ -1,10 +1,11 @@
 # Deployment
 
-Three real deployment paths for AxiaOps:
+Four real deployment paths for AxiaOps:
 
 | Path | Where | Use for |
 |---|---|---|
 | `docker-compose.yml` (repo root) | Local dev | `make start-dev` / `make start-staging` |
+| `deploy/docker/` | Any Docker host | Self-hosting without Kubernetes |
 | `deploy/helm/axiaops/` | Kubernetes | Self-hosting on any k8s cluster |
 | `terraform/` (repo root) | AWS | ECS Express + RDS |
 
@@ -15,6 +16,14 @@ repository (`helm repo add axiaops https://axiaops.io/charts`
 — same pattern as `helm repo add traefik https://traefik.github.io/charts`) — see
 [`helm/axiaops/README.md`](helm/axiaops/README.md) for install instructions and
 the full values reference.
+
+## `docker/`
+
+A `docker-compose.yml` for self-hosting without Kubernetes — pulls the same
+published GHCR images the chart uses, bundles Postgres and Valkey as
+containers. See [`docker-compose.yml`](docker/docker-compose.yml) and
+[`.env.example`](docker/.env.example), or the
+[Deployment guide](https://axiaops.io/guides/deployment/#docker-compose).
 
 ## `certs/`
 
