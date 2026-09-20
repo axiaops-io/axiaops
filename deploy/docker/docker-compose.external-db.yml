@@ -1,0 +1,94 @@
+# Standalone alternative to docker-compose.yml for RDS/ElastiCache instead
+# of bundled Postgres/Valkey containers. No postgres/redis service here at
+# all, so they can never start — run this file on its own, not alongside
+# docker-compose.yml.
+#
+#   cp .env.example .env
+#   # also set POSTGRES_HOST/PORT/SSLMODE and REDIS_HOST/PORT
+#   docker compose -f deploy/docker/docker-compose.external-db.yml --env-file deploy/docker/.env up -d
+#
+# Keep this in sync with docker-compose.yml's migrate/ingestion/api/dashboard
+# services when either changes.
+
+services:
+
+  migrate:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/migrate:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}
+    container_name: axiaops-migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://axiaops:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      MIGRATION_DATABASE_URL: postgres://axiaops_owner:${POSTGRES_OWNER_PASSWORD:?set POSTGRES_OWNER_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      RUNTIME_ADMIN_DATABASE_URL: postgres://axiaops_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      APP_VERSION: ${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}
+
+  ingestion:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/ingestion:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}${AXIAOPS_IMAGE_SUFFIX:-}
+    container_name: axiaops-ingestion
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://axiaops:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      RUNTIME_ADMIN_DATABASE_URL: postgres://axiaops_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY, generate with openssl rand -hex 32}"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@${REDIS_HOST:?set REDIS_HOST}:${REDIS_PORT:-6379}
+      DEV_MODE: "false"
+      LOG_OUTPUT: json
+      INGESTION_SHARED_SECRET: "${INGESTION_SHARED_SECRET:?set INGESTION_SHARED_SECRET, generate with openssl rand -hex 32}"
+      INGESTION_SHARED_SECRET_NEXT: ${INGESTION_SHARED_SECRET_NEXT:-}
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-60m}
+    volumes:
+      # Omit if every connected account uses RoleARN instead of static keys.
+      - ${AWS_CREDENTIALS_DIR:-~/.aws}:/root/.aws:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  api:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/api:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}${AXIAOPS_IMAGE_SUFFIX:-}
+    container_name: axiaops-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://axiaops:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      RUNTIME_ADMIN_DATABASE_URL: postgres://axiaops_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@${POSTGRES_HOST:?set POSTGRES_HOST}:${POSTGRES_PORT:-5432}/axiaops?sslmode=${POSTGRES_SSLMODE:-require}
+      INGESTION_URL: http://ingestion:8081
+      API_ADDR: ":8080"
+      PUBLIC_HOST: ${PUBLIC_HOST:?set PUBLIC_HOST to your externally-reachable https URL}
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY, generate with openssl rand -hex 32}"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@${REDIS_HOST:?set REDIS_HOST}:${REDIS_PORT:-6379}
+      DEV_MODE: "false"
+      LOG_OUTPUT: json
+      INGESTION_SHARED_SECRET: "${INGESTION_SHARED_SECRET:?set INGESTION_SHARED_SECRET, generate with openssl rand -hex 32}"
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-AxiaOps}
+    depends_on:
+      ingestion:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  dashboard:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/dashboard:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}
+    container_name: axiaops-dashboard
+    restart: unless-stopped
+    environment:
+      DEV_MODE: "false"
+    ports:
+      - "${DASHBOARD_PORT:-8082}:80"
+    depends_on:
+      api:
+        condition: service_healthy
