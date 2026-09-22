@@ -2,6 +2,7 @@
   "name": "axiaops-docs",
   "type": "module",
   "version": "0.0.1",
+  "author": "Ahmed Soliman <ahmed@axiaops.io>",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
