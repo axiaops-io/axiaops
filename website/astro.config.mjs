@@ -45,7 +45,10 @@ export default defineConfig({
 			sidebar: [
 				{
 					label: 'Overview',
-					items: [{ label: 'What is AxiaOps', slug: 'index' }],
+					items: [
+						{ label: 'What is AxiaOps', slug: 'index' },
+						{ label: 'Contact Us', link: 'mailto:ahmed@axiaops.io' },
+					],
 				},
 				{
 					label: 'Guides',
