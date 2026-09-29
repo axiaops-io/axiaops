@@ -41,6 +41,7 @@ export default defineConfig({
 				// Dark/Light only -- see the override's own comment for why
 				// "Auto" was dropped.
 				ThemeSelect: './src/components/ThemeSelect.astro',
+				Footer: './src/components/Footer.astro',
 			},
 			sidebar: [
 				{
@@ -55,7 +56,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Architecture', slug: 'guides/architecture' },
 						{ label: 'Deployment', slug: 'guides/deployment' },
-						{ label: 'Deploying on AWS', slug: 'guides/aws-deployment' },
+						{ label: 'Deploying on EKS', slug: 'guides/eks-deployment' },
 						{ label: 'Deploying on ECS', slug: 'guides/ecs-deployment' },
 						{ label: 'Authentication & Roles', slug: 'guides/authentication' },
 						{ label: 'Operations', slug: 'guides/operations' },

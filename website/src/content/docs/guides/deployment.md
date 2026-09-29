@@ -54,7 +54,7 @@ before `api`/`ingestion` restart against the new schema.
 | `image.apiSuffix` | `""` | Leave empty. CI only builds and publishes the DEV_MODE-hardwired-off production `api`/`ingestion` image — an auth-bypass build is never pushed to a public registry. To actually use `devMode.enabled: true`, build the DEV_MODE-capable image yourself (`docker build -f services/api/Dockerfile .`, omitting `BUILD_TAGS`), push it to a registry you control, and point `apiSuffix`/`image.registry` at that. |
 | `ingress.enabled` | `false` | Off by default so hostnames are not hardcoded in chart defaults. Set `ingress.enabled: true` and specify `ingress.host` at install time to configure Ingress routing. |
 | `postgres.existingSecret` | `""` | Required for anything to actually start. The chart installs without it (rendering `NOTES.txt` warnings) so `helm template` / CI linting doesn't need a real Secret to succeed. |
-| `redis.enabled` | `true` | Deploys the in-cluster Valkey Deployment + Service. Set `redis.auth.existingSecret` to a Secret containing a full `redis-url` DSN to point at an external Redis-compatible service instead — note this currently still deploys the in-cluster pod alongside it; there isn't yet a clean way to disable the embedded pod while keeping an external `REDIS_URL` wired in. Setting this `false` is possible (`api`/`ingestion` fall back to an in-memory cache and synchronous scan processing) but not recommended beyond a single-replica trial — it disables API rate limiting and the fallback cache isn't shared across pods. See [Deploying on AWS](../aws-deployment/) for the tradeoffs. |
+| `redis.enabled` | `true` | Deploys the in-cluster Valkey Deployment + Service. Set `redis.auth.existingSecret` to a Secret containing a full `redis-url` DSN to point at an external Redis-compatible service instead — note this currently still deploys the in-cluster pod alongside it; there isn't yet a clean way to disable the embedded pod while keeping an external `REDIS_URL` wired in. Setting this `false` is possible (`api`/`ingestion` fall back to an in-memory cache and synchronous scan processing) but not recommended beyond a single-replica trial — it disables API rate limiting and the fallback cache isn't shared across pods. See [Deploying on EKS](../eks-deployment/) for the tradeoffs. |
 | `ingestion.daysBack` | `30` | Cost lookback window for every scan. Matches the `ingestion` binary's own built-in default, so leaving this alone changes nothing. Override to widen it — e.g. backfilling older billing periods against a `cur_athena` account needs a window that actually reaches back that far. |
 | `ingestion.costRecordsRetentionDays` | `395` | Age cutoff for the nightly `cost_records` retention sweep — 395 (not the `ingestion` binary's own conservative default of 90) to match the dashboard's custom date-range ceiling. Rows older than this are deleted regardless of what the picker allows selecting, so keep this in lockstep with any further widening of `ingestion.daysBack` or the dashboard's selector. |
 
@@ -80,7 +80,7 @@ always ships with real auth, so you'll go through the normal
 [bootstrap flow](../authentication/) even on a throwaway install; if you
 specifically want the DEV_MODE auth bypass, build your own image first (see
 `image.apiSuffix` above). Tighten backing services once you're running it
-for real — see [Deploying on AWS](../aws-deployment/) for what that looks like
+for real — see [Deploying on EKS](../eks-deployment/) for what that looks like
 on EKS.
 
 ## Docker Compose
@@ -123,7 +123,7 @@ docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compo
 
 This covers basic host/port/TLS-in-transit config. It doesn't set up
 `sslmode=verify-full` with the RDS CA bundle (`deploy/certs/`) — use the
-[Terraform/ECS path](../aws-deployment/) if you need that.
+[Terraform/ECS path](../ecs-deployment/) if you need that.
 
 No arm64 images are published yet — the stack currently only runs natively
 on amd64 hosts (Apple Silicon works under Rosetta/QEMU emulation).
