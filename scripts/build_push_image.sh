@@ -8,6 +8,7 @@
 # arm64-only image, and pulling it on an amd64 target (ECS Express is
 # x86-only — see CLAUDE.md) fails with "no match for platform in manifest".
 # This always builds via buildx with an explicit --platform for that reason.
+# Pushes to the org registry CI uses; override with IMAGE_BASE=... to push elsewhere.
 set -euo pipefail
 
 usage() {
@@ -41,7 +42,7 @@ esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-IMAGE_BASE="ghcr.io/ahmd-soliman/axiaops"
+IMAGE_BASE="${IMAGE_BASE:-ghcr.io/axiaops-io/axiaops}"
 IMAGE="${IMAGE_BASE}/${SERVICE}:${TAG}"
 APP_VERSION="${TAG}"
 APP_COMMIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo local)"
