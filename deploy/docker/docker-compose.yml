@@ -1,0 +1,181 @@
+# deploy/docker/docker-compose.yml — self-hosted AxiaOps from published
+# images.
+#
+# This is the "docker compose up" sibling to deploy/helm/axiaops: same
+# required Secrets/env shape, same role-bootstrap sequence, but for anyone
+# running plain Docker instead of Kubernetes. It does NOT build anything —
+# every axiaops image is pulled from GHCR. See the repo-root
+# docker-compose.yml instead for the build-from-source dev loop
+# (`make start-dev` / `make start-staging`, see deploy/README.md).
+#
+# Quick start (from the repo root):
+#   cp deploy/docker/.env.example deploy/docker/.env
+#   # fill in ENCRYPTION_KEY / INGESTION_SHARED_SECRET / passwords /
+#   # PUBLIC_HOST / AXIAOPS_VERSION
+#   docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env up -d
+#
+# Role bootstrap (see docs/AUTHENTICATION.md §5): the `postgres` container's
+# own bootstrap role is axiaops_owner — schema owner, DDL only, used for the
+# one-off `migrate` job (MIGRATION_DATABASE_URL). `migrate` then creates the
+# least-privilege `axiaops` app role (DATABASE_URL) and syncs axiaops_runtime
+# (RUNTIME_ADMIN_DATABASE_URL) — the RLS-bypass role api/ingestion actually
+# connect through at runtime. `migrate` must complete before api/ingestion
+# start, which is why they gate on `service_completed_successfully` below.
+#
+# DEV_MODE is hardcoded false here on purpose. Unlike the Helm chart's
+# image.apiSuffix (which targets the private registry.gitlab.com/axiaops
+# registry, where both shapes get pushed), the published GHCR images have no
+# "-production" variant to opt into — ci.yml/release.yml only ever build and
+# push the production shape (BUILD_TAGS=production, DEV_MODE compiled out at
+# the Go build-tag level, not just disabled by env var). See deploy/README.md
+# "Local development" section. So AXIAOPS_IMAGE_SUFFIX below defaults to
+# empty — there is nothing to opt out of on these images.
+
+services:
+
+  postgres:
+    image: postgres:17.5-alpine
+    container_name: axiaops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: axiaops
+      POSTGRES_USER: axiaops_owner
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?set POSTGRES_OWNER_PASSWORD}
+    volumes:
+      - axiaops_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axiaops_owner -d axiaops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: valkey/valkey:8.1-alpine
+    container_name: axiaops-valkey
+    restart: unless-stopped
+    # Unlike the dev compose, REDIS_PASSWORD has no empty fallback here —
+    # a real deployment always sets it (closes the intra-LAN trust gap in
+    # docs/c1-hmac-plan.md §12 Q7: any process on the docker network could
+    # otherwise LPUSH a forged scan job).
+    command:
+      - valkey-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+
+  migrate:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/migrate:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}
+    container_name: axiaops-migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://axiaops:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      MIGRATION_DATABASE_URL: postgres://axiaops_owner:${POSTGRES_OWNER_PASSWORD:?set POSTGRES_OWNER_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      RUNTIME_ADMIN_DATABASE_URL: postgres://axiaops_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      APP_VERSION: ${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingestion:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/ingestion:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}${AXIAOPS_IMAGE_SUFFIX:-}
+    container_name: axiaops-ingestion
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://axiaops:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      RUNTIME_ADMIN_DATABASE_URL: postgres://axiaops_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY, generate with openssl rand -hex 32}"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+      DEV_MODE: "false"
+      LOG_OUTPUT: json
+      # C-1 HMAC — required once DEV_MODE is false (see docs/c1-hmac-plan.md).
+      # _NEXT supports zero-downtime rotation on the verifier side only.
+      INGESTION_SHARED_SECRET: "${INGESTION_SHARED_SECRET:?set INGESTION_SHARED_SECRET, generate with openssl rand -hex 32}"
+      INGESTION_SHARED_SECRET_NEXT: ${INGESTION_SHARED_SECRET_NEXT:-}
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-60m}
+    volumes:
+      # AWS credentials for scanning connected accounts, if using
+      # AWS_ACCESS_KEY_ID/SECRET auth rather than a role-assumption setup.
+      # Omit this mount entirely if every connected account uses RoleARN.
+      - ${AWS_CREDENTIALS_DIR:-~/.aws}:/root/.aws:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  api:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/api:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}${AXIAOPS_IMAGE_SUFFIX:-}
+    container_name: axiaops-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://axiaops:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      RUNTIME_ADMIN_DATABASE_URL: postgres://axiaops_runtime:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/axiaops?sslmode=disable
+      INGESTION_URL: http://ingestion:8081
+      API_ADDR: ":8080"
+      # Externally-reachable origin — required for OIDC redirect_uri and
+      # invite/password-reset links. Must be the URL your edge proxy
+      # actually exposes this stack at (e.g. https://axiaops.example.com).
+      PUBLIC_HOST: ${PUBLIC_HOST:?set PUBLIC_HOST to your externally-reachable https URL}
+      # Empty is correct for the default same-origin shape (edge proxy fronts
+      # both dashboard and api under one host, same as the ArgoCD deployment
+      # in this repo's own cluster). Only set this for a true cross-origin
+      # deployment (dashboard and api on different hostnames).
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY, generate with openssl rand -hex 32}"
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+      DEV_MODE: "false"
+      LOG_OUTPUT: json
+      INGESTION_SHARED_SECRET: "${INGESTION_SHARED_SECRET:?set INGESTION_SHARED_SECRET, generate with openssl rand -hex 32}"
+      # Optional — leave unset to skip invite/password-reset email delivery.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-AxiaOps}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ingestion:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  dashboard:
+    image: ${AXIAOPS_REGISTRY:-ghcr.io/axiaops-io/axiaops}/dashboard:${AXIAOPS_VERSION:?set AXIAOPS_VERSION to a release tag from https://github.com/axiaops-io/axiaops/releases}
+    container_name: axiaops-dashboard
+    restart: unless-stopped
+    environment:
+      DEV_MODE: "false"
+    ports:
+      # Plain HTTP only — same posture as nginx.conf documents for every
+      # deployment shape: TLS termination is your edge proxy's job
+      # (reverse proxy, load balancer, ingress). Put this behind one; don't
+      # expose 8082 directly to the public internet.
+      - "${DASHBOARD_PORT:-8082}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  axiaops_pg_data:
