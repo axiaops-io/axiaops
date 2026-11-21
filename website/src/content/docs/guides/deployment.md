@@ -111,13 +111,16 @@ it only serves plain HTTP.
 ### Using RDS/ElastiCache instead of the bundled containers
 
 Set `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_SSLMODE` and
-`REDIS_HOST`/`REDIS_PORT`, then layer in
-`docker-compose.external-db.yml` — it drops `postgres`/`redis` from the
-project entirely, so they can't start even on a later plain `up -d`
-(reboot, restart, etc.):
+`REDIS_HOST`/`REDIS_PORT` in `.env`, then run
+`docker-compose.external-db.yml` **on its own**, in place of
+`docker-compose.yml`. It defines no `postgres`/`redis` services at all, so
+they can't start (not even after a reboot or restart). Don't layer it onto
+`docker-compose.yml` with a second `-f`: Compose merges the two files, so the
+bundled containers would still start and `migrate` would still wait on
+`postgres`.
 
 ```bash
-docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.external-db.yml \
+docker compose -f deploy/docker/docker-compose.external-db.yml \
   --env-file deploy/docker/.env up -d
 ```
 
